@@ -1,0 +1,237 @@
+import json
+import uuid
+import logging
+from datetime import datetime, timedelta
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+
+import config
+from models import get_db, upsert_event
+
+log = logging.getLogger("chronicle.google")
+
+
+def get_oauth_flow() -> Flow:
+    flow = Flow.from_client_secrets_file(
+        config.GOOGLE_CREDS_FILE,
+        scopes=config.GOOGLE_SCOPES,
+        redirect_uri=f"{config.WEBHOOK_BASE_URL}/oauth/callback",
+    )
+    return flow
+
+
+def get_credentials() -> Credentials | None:
+    try:
+        with open(config.GOOGLE_TOKEN_FILE) as f:
+            token_data = json.load(f)
+        creds = Credentials.from_authorized_user_info(token_data, config.GOOGLE_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        return creds
+    except (FileNotFoundError, json.JSONDecodeError, Exception) as e:
+        log.warning(f"No valid Google credentials: {e}")
+        return None
+
+
+def save_credentials(creds: Credentials):
+    from pathlib import Path
+    Path(config.GOOGLE_TOKEN_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(config.GOOGLE_TOKEN_FILE, "w") as f:
+        json.dump(json.loads(creds.to_json()), f)
+
+
+def get_service():
+    creds = get_credentials()
+    if not creds:
+        return None
+    return build("calendar", "v3", credentials=creds)
+
+
+def parse_event(event: dict, calendar_id: str) -> dict:
+    start = event.get("start", {})
+    end = event.get("end", {})
+
+    if "dateTime" in start:
+        start_time = start["dateTime"]
+        end_time = end.get("dateTime", start_time)
+        all_day = False
+    else:
+        start_time = start.get("date", "")
+        end_time = end.get("date", start_time)
+        all_day = True
+
+    return {
+        "id": f"google_{event['id']}",
+        "source": "google",
+        "source_id": event["id"],
+        "calendar_id": calendar_id,
+        "title": event.get("summary", "(No title)"),
+        "description": event.get("description", ""),
+        "location": event.get("location", ""),
+        "start_time": start_time,
+        "end_time": end_time,
+        "all_day": 1 if all_day else 0,
+        "status": event.get("status", "confirmed"),
+        "raw_json": json.dumps(event),
+    }
+
+
+def sync_calendar(calendar_id: str = "primary") -> int:
+    service = get_service()
+    if not service:
+        log.error("Google Calendar not authenticated")
+        return 0
+
+    conn = get_db()
+
+    # Check for existing sync token
+    row = conn.execute(
+        "SELECT sync_token FROM sync_state WHERE source='google' AND calendar_id=?",
+        (calendar_id,)
+    ).fetchone()
+
+    sync_token = row["sync_token"] if row else None
+    count = 0
+
+    try:
+        kwargs = {
+            "calendarId": calendar_id,
+            "singleEvents": True,
+            "maxResults": 250,
+        }
+
+        if sync_token:
+            kwargs["syncToken"] = sync_token
+        else:
+            # First sync: get events from 30 days ago to 90 days ahead
+            kwargs["timeMin"] = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+            kwargs["timeMax"] = (datetime.utcnow() + timedelta(days=90)).isoformat() + "Z"
+
+        while True:
+            result = service.events().list(**kwargs).execute()
+
+            for event in result.get("items", []):
+                if event.get("status") == "cancelled":
+                    conn.execute(
+                        "UPDATE events SET status='cancelled' WHERE source='google' AND source_id=?",
+                        (event["id"],)
+                    )
+                else:
+                    parsed = parse_event(event, calendar_id)
+                    upsert_event(conn, parsed)
+                count += 1
+
+            page_token = result.get("nextPageToken")
+            if page_token:
+                kwargs["pageToken"] = page_token
+                kwargs.pop("syncToken", None)
+            else:
+                break
+
+        # Save new sync token
+        new_sync_token = result.get("nextSyncToken", "")
+        conn.execute("""
+            INSERT INTO sync_state (source, calendar_id, sync_token, last_sync)
+            VALUES ('google', ?, ?, datetime('now'))
+            ON CONFLICT(source, calendar_id) DO UPDATE SET
+                sync_token=?, last_sync=datetime('now')
+        """, (calendar_id, new_sync_token, new_sync_token))
+        conn.commit()
+
+    except Exception as e:
+        if "Sync token" in str(e) and "invalid" in str(e):
+            log.warning("Sync token expired, doing full sync")
+            conn.execute("DELETE FROM sync_state WHERE source='google' AND calendar_id=?", (calendar_id,))
+            conn.commit()
+            conn.close()
+            return sync_calendar(calendar_id)
+        log.error(f"Google sync error: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+    log.info(f"Google sync complete: {count} events processed")
+    return count
+
+
+def create_event(summary: str, start: str, end: str, description: str = "", location: str = "",
+                 calendar_id: str = "primary") -> dict | None:
+    service = get_service()
+    if not service:
+        return None
+
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start, "timeZone": "America/New_York"},
+        "end": {"dateTime": end, "timeZone": "America/New_York"},
+    }
+    if description:
+        body["description"] = description
+    if location:
+        body["location"] = location
+
+    event = service.events().insert(calendarId=calendar_id, body=body).execute()
+    log.info(f"Created Google event: {event['id']} - {summary}")
+
+    # Sync it into our DB
+    conn = get_db()
+    upsert_event(conn, parse_event(event, calendar_id))
+    conn.commit()
+    conn.close()
+
+    return event
+
+
+def delete_event(source_id: str, calendar_id: str = "primary") -> bool:
+    service = get_service()
+    if not service:
+        return False
+    try:
+        service.events().delete(calendarId=calendar_id, eventId=source_id).execute()
+        conn = get_db()
+        conn.execute("UPDATE events SET status='cancelled' WHERE source='google' AND source_id=?", (source_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error(f"Failed to delete event {source_id}: {e}")
+        return False
+
+
+def setup_webhook(calendar_id: str = "primary") -> dict | None:
+    """Register a push notification channel for real-time updates."""
+    service = get_service()
+    if not service:
+        return None
+
+    channel_id = str(uuid.uuid4())
+    body = {
+        "id": channel_id,
+        "type": "web_hook",
+        "address": f"{config.WEBHOOK_BASE_URL}/webhook/google",
+        "params": {"ttl": "604800"},  # 7 days
+    }
+
+    try:
+        result = service.events().watch(calendarId=calendar_id, body=body).execute()
+        expiry = datetime.utcfromtimestamp(int(result["expiration"]) / 1000).isoformat()
+
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO sync_state (source, calendar_id, channel_id, channel_expiry, last_sync)
+            VALUES ('google', ?, ?, ?, datetime('now'))
+            ON CONFLICT(source, calendar_id) DO UPDATE SET
+                channel_id=?, channel_expiry=?
+        """, (calendar_id, channel_id, expiry, channel_id, expiry))
+        conn.commit()
+        conn.close()
+
+        log.info(f"Google webhook registered: channel={channel_id}, expires={expiry}")
+        return result
+    except Exception as e:
+        log.error(f"Failed to set up Google webhook: {e}")
+        return None

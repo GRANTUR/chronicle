@@ -1,0 +1,45 @@
+# =============================================================================
+# Traefik IngressRoute for The Chronicle
+# Routes /chronicle/* to Chronicle NodePort on high-palace
+# =============================================================================
+
+# --- Service+Endpoints relay (Traefik CRD can't cross namespaces) ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chronicle-external
+  namespace: kube-system
+spec:
+  ports:
+    - port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: chronicle-external
+  namespace: kube-system
+subsets:
+  - addresses:
+      - ip: 10.0.0.64
+    ports:
+      - port: 30890
+
+---
+# --- IngressRoute: Chronicle ---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: chronicle
+  namespace: kube-system
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`gigilab.duckdns.org`) && PathPrefix(`/chronicle`)
+      kind: Rule
+      services:
+        - name: chronicle-external
+          port: 8090
+  tls:
+    certResolver: letsencrypt
