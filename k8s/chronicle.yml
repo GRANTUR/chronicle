@@ -18,7 +18,7 @@ metadata:
 type: Opaque
 stringData:
   google-creds.json: |
-    REDACTED — set on server only
+    {"web":{"client_id":"39034318857-d3jdj29hhne68u6ukht0qm5vskfgnnn6.apps.googleusercontent.com","project_id":"empyrean-chronicle","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_secret":"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","redirect_uris":["https://gigilab.duckdns.org/chronicle/oauth/callback"]}}
 
 ---
 # --- Chronicle config secrets ---
@@ -29,12 +29,12 @@ metadata:
   namespace: ecosystem
 type: Opaque
 stringData:
-  DISCORD_WEBHOOK_URL: "REDACTED"
-  AZURE_CLIENT_ID: "REDACTED"
-  AZURE_CLIENT_SECRET: "REDACTED"
+  DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1487842660554244177/nxGbjmGt98ZkIP3vVVt-8oTL3hhvI8aob50ZSfDMNbMUVgpf4xoYbuJo0zx4XpjhVeog"
+  AZURE_CLIENT_ID: "4037e959-ecd2-4e2b-9f26-c0a4802f729d"
+  AZURE_CLIENT_SECRET: "dyd8Q~njVll7RhXYE3S-fgC0ovFjGYtEd~12SbVC"
   AZURE_TENANT_ID: "consumers"
-  DISCORD_BOT_TOKEN: "REDACTED"
-  ANTHROPIC_API_KEY: "REDACTED"
+  DISCORD_BOT_TOKEN: "MTQ4Nzg1Mzg0OTczMjU4MzQ0NA.GnNtOP.rBZP0cfe35MuANj7C7LNK5Id_tFW33WZPecGwk"
+  ANTHROPIC_API_KEY: "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"
 
 ---
 apiVersion: v1
