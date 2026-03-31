@@ -202,11 +202,36 @@ def delete_event(source_id: str, calendar_id: str = "primary") -> bool:
         return False
 
 
+def stop_webhook(channel_id: str, resource_id: str) -> bool:
+    """Stop an existing Google push notification channel."""
+    service = get_service()
+    if not service:
+        return False
+    try:
+        service.channels().stop(body={"id": channel_id, "resourceId": resource_id}).execute()
+        log.info(f"Stopped Google webhook channel: {channel_id}")
+        return True
+    except Exception as e:
+        log.warning(f"Failed to stop Google webhook channel {channel_id}: {e}")
+        return False
+
+
 def setup_webhook(calendar_id: str = "primary") -> dict | None:
-    """Register a push notification channel for real-time updates."""
+    """Register a push notification channel for real-time updates.
+    Stops the previous channel first to avoid duplicate notifications."""
     service = get_service()
     if not service:
         return None
+
+    # Stop existing channel before creating a new one
+    conn = get_db()
+    row = conn.execute(
+        "SELECT channel_id, resource_id FROM sync_state WHERE source='google' AND calendar_id=?",
+        (calendar_id,)
+    ).fetchone()
+    if row and row["channel_id"] and row["resource_id"]:
+        stop_webhook(row["channel_id"], row["resource_id"])
+    conn.close()
 
     channel_id = str(uuid.uuid4())
     body = {
@@ -219,14 +244,15 @@ def setup_webhook(calendar_id: str = "primary") -> dict | None:
     try:
         result = service.events().watch(calendarId=calendar_id, body=body).execute()
         expiry = datetime.utcfromtimestamp(int(result["expiration"]) / 1000).isoformat()
+        resource_id = result.get("resourceId", "")
 
         conn = get_db()
         conn.execute("""
-            INSERT INTO sync_state (source, calendar_id, channel_id, channel_expiry, last_sync)
-            VALUES ('google', ?, ?, ?, datetime('now'))
+            INSERT INTO sync_state (source, calendar_id, channel_id, channel_expiry, resource_id, last_sync)
+            VALUES ('google', ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(source, calendar_id) DO UPDATE SET
-                channel_id=?, channel_expiry=?
-        """, (calendar_id, channel_id, expiry, channel_id, expiry))
+                channel_id=?, channel_expiry=?, resource_id=?
+        """, (calendar_id, channel_id, expiry, resource_id, channel_id, expiry, resource_id))
         conn.commit()
         conn.close()
 

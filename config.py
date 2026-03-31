@@ -28,7 +28,7 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 # --- Ollama (via relay on high-palace — fallback if no API key) ---
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama-relay:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 
 # --- Chronicle ---
 DB_PATH = os.getenv("CHRONICLE_DB", str(BASE_DIR / "data" / "chronicle.db"))

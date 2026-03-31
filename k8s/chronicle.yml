@@ -86,7 +86,7 @@ spec:
             - name: OLLAMA_URL
               value: http://ollama-relay.minecraft.svc.cluster.local:11434
             - name: OLLAMA_MODEL
-              value: qwen3:14b
+              value: qwen3.5:9b
             - name: WEBHOOK_BASE_URL
               value: https://gigilab.duckdns.org/chronicle
             - name: CHRONICLE_PORT

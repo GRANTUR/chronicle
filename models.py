@@ -43,6 +43,7 @@ def init_db():
             sync_token TEXT,                   -- incremental sync token
             channel_id TEXT,                   -- webhook channel ID
             channel_expiry TEXT,               -- webhook expiration
+            resource_id TEXT,                  -- Google resource ID (needed to stop channels)
             last_sync TEXT,
             UNIQUE(source, calendar_id)
         );

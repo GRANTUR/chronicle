@@ -203,6 +203,16 @@ async def webhook_google(request: Request):
     if resource_state == "sync":
         return Response(status_code=200)
 
+    # Only process from the currently registered channel to avoid duplicates
+    conn = models.get_db()
+    row = conn.execute(
+        "SELECT channel_id FROM sync_state WHERE source='google' AND calendar_id='primary'"
+    ).fetchone()
+    conn.close()
+    if row and row["channel_id"] and channel_id != row["channel_id"]:
+        log.info(f"Google webhook: ignoring stale channel {channel_id} (current: {row['channel_id']})")
+        return Response(status_code=200)
+
     # Something changed — do an incremental sync
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, google_cal.sync_calendar)
