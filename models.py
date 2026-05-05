@@ -115,3 +115,26 @@ def get_events_range(conn: sqlite3.Connection, start: str, end: str) -> list[dic
         ORDER BY start_time
     """, (start, end)).fetchall()
     return [dict(r) for r in rows]
+
+
+def mark_orphans_cancelled(conn: sqlite3.Connection, source: str, calendar_id: str,
+                            time_min: str, time_max: str, observed_ids: set) -> int:
+    """Mark confirmed events in the [time_min, time_max) window as cancelled if their
+    source_id wasn't in the latest fetch. Used after a tokenless full resync — the source
+    only returns currently-existing events, so anything in our DB but absent from the
+    response was deleted upstream."""
+    candidates = conn.execute("""
+        SELECT source_id FROM events
+        WHERE source=? AND calendar_id=? AND status='confirmed'
+          AND start_time >= ? AND start_time < ?
+    """, (source, calendar_id, time_min, time_max)).fetchall()
+    reaped = 0
+    for r in candidates:
+        if r["source_id"] not in observed_ids:
+            conn.execute(
+                "UPDATE events SET status='cancelled', updated_at=datetime('now') "
+                "WHERE source=? AND source_id=?",
+                (source, r["source_id"])
+            )
+            reaped += 1
+    return reaped

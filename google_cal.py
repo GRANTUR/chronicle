@@ -9,7 +9,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 import config
-from models import get_db, upsert_event
+from models import get_db, upsert_event, mark_orphans_cancelled
 
 log = logging.getLogger("chronicle.google")
 
@@ -95,6 +95,9 @@ def sync_calendar(calendar_id: str = "primary") -> int:
     ).fetchone()
 
     sync_token = row["sync_token"] if row else None
+    tokenless = sync_token is None
+    observed_ids: set[str] = set()
+    time_min = time_max = None
     count = 0
 
     try:
@@ -108,8 +111,10 @@ def sync_calendar(calendar_id: str = "primary") -> int:
             kwargs["syncToken"] = sync_token
         else:
             # First sync: get events from 30 days ago to 90 days ahead
-            kwargs["timeMin"] = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
-            kwargs["timeMax"] = (datetime.utcnow() + timedelta(days=90)).isoformat() + "Z"
+            time_min = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+            time_max = (datetime.utcnow() + timedelta(days=90)).isoformat() + "Z"
+            kwargs["timeMin"] = time_min
+            kwargs["timeMax"] = time_max
 
         while True:
             result = service.events().list(**kwargs).execute()
@@ -123,6 +128,8 @@ def sync_calendar(calendar_id: str = "primary") -> int:
                 else:
                     parsed = parse_event(event, calendar_id)
                     upsert_event(conn, parsed)
+                    if tokenless:
+                        observed_ids.add(event["id"])
                 count += 1
 
             page_token = result.get("nextPageToken")
@@ -131,6 +138,11 @@ def sync_calendar(calendar_id: str = "primary") -> int:
                 kwargs.pop("syncToken", None)
             else:
                 break
+
+        if tokenless:
+            reaped = mark_orphans_cancelled(conn, "google", calendar_id, time_min, time_max, observed_ids)
+            if reaped:
+                log.warning(f"Google: reaped {reaped} orphan events absent from full resync")
 
         # Save new sync token
         new_sync_token = result.get("nextSyncToken", "")

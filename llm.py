@@ -106,7 +106,9 @@ def analyze_schedule(hours: int = 24) -> str | None:
             time_str = dt.strftime("%a %b %d %I:%M %p")
         except (ValueError, AttributeError):
             time_str = e["start_time"]
-        event_lines.append(f"- {time_str}: {e['title']} ({e['source']}){' @ ' + e['location'] if e['location'] else ''}")
+        desc = (e.get("description") or "").replace("\n", " ").strip()
+        desc_part = f" — {desc[:200]}" if desc else ""
+        event_lines.append(f"- {time_str}: {e['title']} ({e['source']}){' @ ' + e['location'] if e['location'] else ''}{desc_part}")
 
     prompt = f"""Here are the upcoming events for the next {hours} hours:
 
@@ -133,7 +135,9 @@ def analyze_change(event: dict, change_type: str, all_events: list[dict]) -> str
             time_str = dt.strftime("%a %I:%M %p")
         except (ValueError, AttributeError):
             time_str = e["start_time"]
-        other_lines.append(f"- {time_str}: {e['title']}")
+        desc = (e.get("description") or "").replace("\n", " ").strip()
+        desc_part = f" — {desc[:200]}" if desc else ""
+        other_lines.append(f"- {time_str}: {e['title']}{desc_part}")
 
     prompt = f"""A calendar event was {change_type}:
 - Title: {event.get('title', '?')}
@@ -202,7 +206,9 @@ def analyze_period(period: str = "week") -> str | None:
                 time_str = dt.strftime("%I:%M %p")
             except (ValueError, AttributeError):
                 time_str = "?"
-            lines.append(f"  - {time_str}: {e['title']} ({e['source']})")
+            desc = (e.get("description") or "").replace("\n", " ").strip()
+            desc_part = f" — {desc[:200]}" if desc else ""
+            lines.append(f"  - {time_str}: {e['title']} ({e['source']}){desc_part}")
 
     event_text = chr(10).join(lines)
     if len(event_text) > 6000:

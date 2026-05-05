@@ -6,7 +6,7 @@ import msal
 import httpx
 
 import config
-from models import get_db, upsert_event
+from models import get_db, upsert_event, mark_orphans_cancelled
 
 log = logging.getLogger("chronicle.outlook")
 
@@ -89,6 +89,8 @@ def get_access_token() -> str | None:
         if result and "access_token" in result:
             save_token(result)
             return result["access_token"]
+        if result and "error" in result:
+            log.error(f"Outlook refresh failed: {result.get('error')} - {result.get('error_description', '')[:200]}")
 
     return token.get("access_token")
 
@@ -99,7 +101,7 @@ def parse_event(event: dict) -> dict:
     all_day = event.get("isAllDay", False)
 
     return {
-        "id": f"outlook_{event['id'][:64]}",
+        "id": f"outlook_{event['id']}",
         "source": "outlook",
         "source_id": event["id"],
         "calendar_id": "default",
@@ -122,7 +124,10 @@ def sync_calendar() -> int:
 
     conn = get_db()
     count = 0
+    observed_ids: set[str] = set()
     now = datetime.utcnow()
+    time_min = (now - timedelta(days=30)).isoformat() + "Z"
+    time_max = (now + timedelta(days=90)).isoformat() + "Z"
 
     try:
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -130,7 +135,7 @@ def sync_calendar() -> int:
             "$select": "id,subject,bodyPreview,start,end,location,isAllDay,isCancelled",
             "$orderby": "start/dateTime",
             "$top": 250,
-            "$filter": f"start/dateTime ge '{(now - timedelta(days=30)).isoformat()}Z' and start/dateTime le '{(now + timedelta(days=90)).isoformat()}Z'",
+            "$filter": f"start/dateTime ge '{time_min}' and start/dateTime le '{time_max}'",
         }
 
         url = f"{GRAPH_BASE}/me/calendar/events"
@@ -142,10 +147,16 @@ def sync_calendar() -> int:
             for event in data.get("value", []):
                 parsed = parse_event(event)
                 upsert_event(conn, parsed)
+                if not event.get("isCancelled"):
+                    observed_ids.add(event["id"])
                 count += 1
 
             url = data.get("@odata.nextLink")
             params = {}  # nextLink includes params
+
+        reaped = mark_orphans_cancelled(conn, "outlook", "default", time_min, time_max, observed_ids)
+        if reaped:
+            log.warning(f"Outlook: reaped {reaped} orphan events absent from sync window")
 
         conn.execute("""
             INSERT INTO sync_state (source, calendar_id, last_sync)
